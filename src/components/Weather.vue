@@ -13,7 +13,7 @@
     <span class="sm-hidden">{{ weatherData.weather.windpower }}&nbsp;级</span>
   </div>
   <div class="weather" v-else>
-    <span>天气数据获取失败</span>
+    <span>天气数据获取中...</span>
   </div>
 </template>
 
@@ -43,10 +43,9 @@ const weatherData = reactive({
 // 加载状态
 const loading = ref(false);
 
-// 取出天气平均值
+// 取出天气平均值 (用于备用接口)
 const getTemperature = (min, max) => {
   try {
-    // 计算平均值并四舍五入
     const average = (Number(min) + Number(max)) / 2;
     return Math.round(average);
   } catch (error) {
@@ -55,84 +54,14 @@ const getTemperature = (min, max) => {
   }
 };
 
-// 使用浏览器定位获取天气
-const getLocationByBrowser = () => {
-  loading.value = true;
-  
-  if (!navigator.geolocation) {
-    console.log("您的浏览器不支持地理定位功能");
-    getLocationByIP();
-    return;
-  }
-  
-  navigator.geolocation.getCurrentPosition(
-    async (position) => {
-      try {
-        const { latitude, longitude } = position.coords;
-        console.log("获取到位置:", latitude, longitude);
-        
-        // 使用逆地理编码获取城市信息
-        // 这里需要您实现或使用现有的逆地理编码API
-        // 例如: const result = await getReverseGeocode(mainKey, `${longitude},${latitude}`);
-        
-        // 模拟逆地理编码结果
-        const result = {
-          regeocode: {
-            addressComponent: {
-              city: "上海市", // 这里应该是从API获取的实际城市
-              adcode: "310100", // 这里应该是从API获取的实际adcode
-            }
-          },
-          infocode: "10000"
-        };
-        
-        if (result.infocode !== "10000") {
-          throw new Error("逆地理编码失败");
-        }
-        
-        weatherData.adCode = {
-          city: result.regeocode.addressComponent.city,
-          adcode: result.regeocode.addressComponent.adcode,
-        };
-        
-        // 获取天气信息
-        const weatherResult = await getWeather(mainKey, weatherData.adCode.adcode);
-        weatherData.weather = {
-          weather: weatherResult.lives[0].weather,
-          temperature: weatherResult.lives[0].temperature,
-          winddirection: weatherResult.lives[0].winddirection,
-          windpower: weatherResult.lives[0].windpower,
-        };
-        
-        loading.value = false;
-      } catch (error) {
-        console.error("浏览器定位获取天气失败:", error);
-        // 失败后回退到IP定位
-        getLocationByIP();
-      }
-    },
-    (error) => {
-      console.error("浏览器定位失败:", error);
-      // 失败后回退到IP定位
-      getLocationByIP();
-    },
-    {
-      enableHighAccuracy: true,
-      timeout: 5000,
-      maximumAge: 300000
-    }
-  );
-};
-
-// 使用IP定位获取天气
-const getLocationByIP = async () => {
+// 获取天气与定位数据 (统一使用 IP 定位)
+const getWeatherData = async () => {
   loading.value = true;
   
   try {
     if (!mainKey) {
       console.log("未配置高德Key，使用备用天气接口");
       const result = await getOtherWeather();
-      console.log(result);
       const data = result.result;
       weatherData.adCode = {
         city: data.city.City || "未知地区",
@@ -144,37 +73,41 @@ const getLocationByIP = async () => {
         windpower: data.condition.day_wind_power,
       };
     } else {
-      // 获取 Adcode
-      const adCode = await getAdcode(mainKey);
-      console.log(adCode);
-      if (adCode.infocode !== "10000") {
-        throw "地区查询失败";
+      // 1. 获取基于 IP 的定位 Adcode
+      const adCodeResult = await getAdcode(mainKey);
+      if (adCodeResult.infocode !== "10000") {
+        throw new Error("地区查询失败");
       }
+
+      // 修复直辖市逻辑（city 为空时取 province）
+      const locationName = (adCodeResult.city && typeof adCodeResult.city === 'string') 
+        ? adCodeResult.city 
+        : adCodeResult.province;
+
       weatherData.adCode = {
-        city: adCode.city,
-        adcode: adCode.adcode,
+        city: locationName,
+        adcode: adCodeResult.adcode,
       };
-      // 获取天气信息
-      const result = await getWeather(mainKey, weatherData.adCode.adcode);
+
+      // 2. 获取天气信息
+      const weatherResult = await getWeather(mainKey, weatherData.adCode.adcode);
+      if (weatherResult.infocode !== "10000") {
+        throw new Error("天气获取失败");
+      }
+
       weatherData.weather = {
-        weather: result.lives[0].weather,
-        temperature: result.lives[0].temperature,
-        winddirection: result.lives[0].winddirection,
-        windpower: result.lives[0].windpower,
+        weather: weatherResult.lives[0].weather,
+        temperature: weatherResult.lives[0].temperature,
+        winddirection: weatherResult.lives[0].winddirection,
+        windpower: weatherResult.lives[0].windpower,
       };
     }
-    loading.value = false;
   } catch (error) {
-    console.error("IP定位获取天气失败:" + error);
+    console.error("定位或获取天气失败:", error);
     onError("天气信息获取失败");
+  } finally {
     loading.value = false;
   }
-};
-
-// 获取天气数据
-const getWeatherData = () => {
-  // 默认使用浏览器定位
-  getLocationByBrowser();
 };
 
 // 报错信息
@@ -186,11 +119,10 @@ const onError = (message) => {
       fill: "#efefef",
     }),
   });
-  console.error(message);
 };
 
 onMounted(() => {
-  // 调用获取天气
+  // 组件挂载时调用
   getWeatherData();
 });
 </script>
